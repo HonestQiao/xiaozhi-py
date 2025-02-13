@@ -122,6 +122,10 @@ python main.py --mode automated --scenario scenarios/example.json
 - 音频文件保存在 `test_outputs` 目录
 - 可以通过日志追踪测试流程
 
+## 开发者
+- 贤立
+- HonestQiao
+
 ## 许可证
 
 MIT License

@@ -1,0 +1,8 @@
+edge-tts>=6.1.9
+soundfile>=0.12.1
+pydub>=0.25.1
+numpy>=1.24.0
+websockets>=11.0.3
+opuslib>=3.0.1
+funasr>=1.2.3
+pyaudio>=0.2.13 

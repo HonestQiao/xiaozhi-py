@@ -10,19 +10,21 @@ import soundfile as sf
 import io
 from pydub import AudioSegment
 import argparse
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Iterator
+import threading
+import time
+import wave
 
+import config
 
-# 配置参数
-WEBSOCKET_URI = "ws://192.168.100.11:8000"
-SAMPLE_RATE = 16000  # 服务器要求16kHz采样率
-CHANNELS = 1
+p = pyaudio.PyAudio()
+audio_data_queue = []
 
 # 添加音频设备检测
 def check_audio_device():
     """检查是否有可用的音频输出设备"""
     try:
-        p = pyaudio.PyAudio()
+        # p = pyaudio.PyAudio()
         device_count = p.get_device_count()
         has_output = False
 
@@ -33,8 +35,29 @@ def check_audio_device():
                 has_output = True
                 break
 
-        p.terminate()
+        # p.terminate()
         return has_output
+    except Exception as e:
+        print(f"[ERROR] 检查音频设备时出错: {e}")
+        return False
+
+# 添加录音设备检测
+def check_record_device():
+    """检查是否有可用的音频输入设备"""
+    try:
+        # p = pyaudio.PyAudio()
+        device_count = p.get_device_count()
+        has_input = False
+
+        # 检查所有设备
+        for i in range(device_count):
+            device_info = p.get_device_info_by_index(i)
+            if device_info.get('maxInputChannels') > 0:
+                has_input = True
+                break
+
+        # p.terminate()
+        return has_input
     except Exception as e:
         print(f"[ERROR] 检查音频设备时出错: {e}")
         return False
@@ -44,20 +67,30 @@ has_audio_device = check_audio_device()
 if not has_audio_device:
     print("[WARN] 未检测到音频输出设备，将不会播放音频")
 
-# 播放音频流
-def play_audio_stream(audio_data):
+has_record_device = check_record_device()
+if not has_record_device:
+    print("[WARN] 未检测到音频输入设备，将不会录制音频")
+
+def play_audio_queue() -> Iterator[bytes]:
+    global audio_data_queue
+    while True:
+        if len(audio_data_queue):
+            yield audio_data_queue.pop(0)
+        pass
+
+def play_audio_stream(audio_stream: Iterator[bytes]) -> bytes:
     """直接使用 opuslib 解码 Opus 数据并用 pyaudio 播放"""
-    global has_audio_device
+    global has_audio_device, audio_data_queue
 
     if not has_audio_device:
         return
 
     try:
         # 初始化 Opus 解码器
-        decoder = opuslib.Decoder(SAMPLE_RATE, CHANNELS)
+        decoder = opuslib.Decoder(config.SAMPLE_RATE, config.CHANNELS)
 
         # 初始化 PyAudio
-        p = pyaudio.PyAudio()
+        # p = pyaudio.PyAudio()
         stream = None
 
         # 查找默认输出设备
@@ -67,8 +100,8 @@ def play_audio_stream(audio_data):
         try:
             stream = p.open(
                 format=pyaudio.paInt16,
-                channels=CHANNELS,
-                rate=SAMPLE_RATE,
+                channels=config.CHANNELS,
+                rate=config.SAMPLE_RATE,
                 output=True,
                 output_device_index=device_index,  # 指定输出设备
                 frames_per_buffer=960  # 设置缓冲区大小
@@ -78,11 +111,12 @@ def play_audio_stream(audio_data):
             frame_size = 960
 
             # 解码音频数据
-            pcm_data = decoder.decode(audio_data, frame_size)
+            for audio_data in audio_stream:
+                pcm_data = decoder.decode(audio_data, frame_size)
 
-            # 将解码后的PCM数据写入音频流
-            if stream.is_active():
-                stream.write(pcm_data)
+                # 将解码后的PCM数据写入音频流
+                if stream.is_active():
+                    stream.write(pcm_data)
 
         except Exception as e:
             print(f"[ERROR] 播放音频帧失败: {e}")
@@ -95,13 +129,94 @@ def play_audio_stream(audio_data):
                     stream.close()
                 except Exception:
                     pass
-            p.terminate()
+            # p.terminate()
 
     except Exception as e:
         print(f"[ERROR] 初始化音频播放失败: {e}")
         if "no default output device available" in str(e).lower():
             has_audio_device = False
             print("[WARN] 未检测到音频设备，后续将不会尝试播放音频")
+
+async def record_and_send_audio(client, sample_rate: int = 16000, channels: int = 1, frame_duration: int = 60, silence_threshold: float = 0.01, silence_frames: int = 5, sound_threshold: float = 0.1):
+    global has_record_device
+
+    if not has_record_device:
+        return
+
+    try:
+        """录制音频数据并边录制边发送"""
+        # 初始化 PyAudio
+        # p = pyaudio.PyAudio()
+
+        # 计算每帧的采样点数
+        frame_size = int(sample_rate * (frame_duration / 1000))
+
+        # 打开音频流
+        default_device_info = p.get_default_input_device_info()
+        device_index = default_device_info['index']
+
+        stream = p.open(
+                        format=pyaudio.paInt16,
+                        channels=channels,
+                        rate=sample_rate,
+                        input=True,
+                        input_device_index=device_index,  # 指定输入设备
+                        frames_per_buffer=frame_size
+                    )
+
+        # print(f"[INFO] 开始录制音频，持续时间: {duration} 秒")
+        print(f"[INFO] 开始监听音频")
+
+        # 初始化 Opus 编码器
+        encoder = opuslib.Encoder(sample_rate, channels, opuslib.APPLICATION_VOIP)
+
+        recording = False
+        silent_frames_count = 0
+
+        while True:
+            data = stream.read(frame_size)
+
+            # 计算音频数据的能量（RMS）
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            rms = np.sqrt(np.mean(audio_data ** 2))
+
+            if rms > sound_threshold:
+                if not recording:
+                    print(f"[INFO] 检测到声音，开始录制")
+                    recording = True
+                    silent_frames_count = 0
+
+                # 编码为 Opus 格式
+                opus_frame = encoder.encode(data, frame_size)
+
+                # 发送 Opus 帧
+                await client.websocket.send(opus_frame)
+                print(f"[INFO] 发送音频帧")
+            else:
+                if recording:
+                    silent_frames_count += 1
+                    if silent_frames_count >= silence_frames:
+                        print(f"[INFO] 检测到静音，结束录制")
+                        recording = False
+                        silent_frames_count = 0
+                        # await client.websocket.send(b'')
+                        break
+
+        print("[INFO] 录制完成")
+        await client.websocket.send(json.dumps({"session_id":client.audio_config.session_id,"type":"listen","state":"stop"}))
+        await client.websocket.send(b'')
+        time.sleep(0.1)
+
+        # 停止和关闭流
+        stream.stop_stream()
+        stream.close()
+        # p.terminate()
+    except Exception as e:
+        print(f"[ERROR] 初始化音频录制失败: {e}")
+        if "no default input device available" in str(e).lower():
+            has_record_device = False
+            print("[WARN] 未检测到音频录制设备，后续将不会尝试录制音频")
+
 
 class AudioConfig:
     def __init__(self, config_json):
@@ -125,6 +240,7 @@ async def generate_tts(text: str) -> bytes:
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             audio_data += chunk["data"]
+
     return audio_data
 
 async def text_to_opus_audio(text, audio_config):
@@ -240,7 +356,7 @@ class WebSocketClient:
                 # 只打印较大的音频数据包
                 if len(message) > 100:
                     print(f"[INFO] 收到音频数据: {len(message)} bytes")
-                play_audio_stream(message)
+                audio_data_queue.append(message)
             else:
                 # 如果禁用了音频播放，只打印收到数据的信息
                 print(f"[INFO] 收到音频数据: {len(message)} bytes (未播放)")
@@ -251,6 +367,10 @@ class WebSocketClient:
                 if isinstance(data, dict):
                     msg_type = data.get('type', 'unknown')
                     print(f"[INFO] 收到{msg_type}消息: {message}")
+                    if msg_type == 'tts':
+                        msg_state = data.get('state', 'unknown')
+                        if msg_state=='stop':
+                            print(f"[INFO] tts结束")
                 else:
                     print(f"[INFO] 收到文本: {message}")
             except json.JSONDecodeError:
@@ -272,6 +392,9 @@ class WebSocketClient:
         await self.websocket.send(json.dumps(init_config))
         print("[INFO] 发送初始配置")
 
+        time.sleep(0.1)
+        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"detect","mode":"auto","text":"小美同学"}))
+
     async def send_text(self, text: str):
         """将文本转换为语音并发送"""
         print(f"[INFO] 发送文本: {text}")
@@ -284,6 +407,11 @@ class WebSocketClient:
             await self.websocket.send(frame)
             print(f"[INFO] 发送音频帧 {i+1}/{len(opus_frames)}")
             await asyncio.sleep(0.06)
+
+    async def send_audio(self):
+        """将录制音频为语音并发送"""
+        print(f"[INFO] 录制音频")
+        await record_and_send_audio(self, sample_rate=config.SAMPLE_RATE, channels=config.CHANNELS, frame_duration = config.FRAME_DURATION, silence_threshold=config.SILENCE_THRESHOLD, silence_frames = config.SILENCE_FRAMES, sound_threshold=config.SOUND_THRESHOLD)
 
     async def close(self):
         """关闭WebSocket连接和接收任务"""
@@ -323,9 +451,12 @@ async def async_input(prompt: str = "") -> str:
     return await loop.run_in_executor(None, input, prompt)
 
 async def interactive_mode(client: WebSocketClient):
+    global audio_data_queue
     """交互模式：从命令行读取用户输入并发送"""
     print("进入交互模式")
     print("- 输入 'quit' 或 'exit' 退出")
+    if has_record_device:
+        print("- 输入 'r' 录音")
     print("- 按 Ctrl+C 退出")
     print("- 输入文字后按回车发送")
     print("-" * 50)
@@ -335,13 +466,16 @@ async def interactive_mode(client: WebSocketClient):
             # 使用异步输入
             text = await async_input("> ")
 
-            if text.lower() in ['quit', 'exit']:
+            if text.lower() in ['quit', 'exit', 'q']:
                 print("正在退出程序...")
                 break
             if not text.strip():  # 跳过空输入
                 continue
 
-            await client.send_text(text)
+            if text.lower() in ['r', 'record']:
+                await client.send_audio()
+            else:
+                await client.send_text(text)
 
         except KeyboardInterrupt:
             print("\n检测到 Ctrl+C，正在退出程序...")
@@ -356,7 +490,7 @@ async def automated_test(scenario_file: str, args):
     with open(scenario_file, 'r', encoding='utf-8') as f:
         scenarios = json.load(f)
 
-    client = WebSocketClient(WEBSOCKET_URI, args)
+    client = WebSocketClient(config.WEBSOCKET_URI, args)
     try:
         await client.connect()
         dialogue = DialogueScenario(scenarios["messages"])
@@ -377,12 +511,14 @@ def parse_args():
     parser.add_argument('--scenario', type=str, help='测试场景文件路径')
     parser.add_argument('--play-audio', action='store_true',
                       help='启用音频播放 (默认: 不播放)')
+    parser.add_argument('--use-mic', action='store_true',
+                      help='启用音频录制 (默认: 不录制)')
     return parser.parse_args()
 
 
 async def main():
     args = parse_args()
-    client = WebSocketClient(WEBSOCKET_URI, args)
+    client = WebSocketClient(config.WEBSOCKET_URI, args)
 
     try:
         await client.connect()
@@ -405,5 +541,14 @@ async def main():
 
 
 if __name__ == "__main__":
+    audio_chunk_iterator = play_audio_queue()
+
+    # 创建一个线程来运行 play_audio_service
+    audio_thread = threading.Thread(target=play_audio_stream, args=(audio_chunk_iterator,))
+    audio_thread.daemon = True  # 设置为守护线程，主线程退出时自动结束
+
+    # 启动线程
+    audio_thread.start()
+
     asyncio.run(main())
 

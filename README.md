@@ -14,6 +14,7 @@
 ```bash
 pip install -r requirements.txt
 ```
+建议：可以先安装conda，然后使用conda创建一个`xiaozhi-py`的专属环境。
 
 2. 安装系统依赖：
 
@@ -49,13 +50,13 @@ python main.py --use-mic
 ### 运行交互式客户端
 
 ```bash
-python main.py --mode interactive
+python main.py --mode interactive --play-audio --use-mic
 ```
 
 ### 运行自动化测试场景
 
 ```bash
-python main.py --mode automated --scenario scenarios/example.json
+python main.py --mode automated --scenario scenarios/example.json --play-audio
 ```
 
 ## 目录结构
@@ -115,6 +116,9 @@ python main.py --mode automated --scenario scenarios/example.json
 1. 音频播放问题
    - 检查系统音频设备
    - 确认 PyAudio 安装正确
+2. opus.dll问题：
+    - 错误提示：`FileNotFoundError: Could not find module 'opus.dll' (or one of its dependencies). Try using the full path with constructor syntax. `
+    - 将目录中的 `opus.dll` 拷贝到系统目录中(通常为`C:\Windows\System32`)，然后再次运行
 
 ### 调试信息
 

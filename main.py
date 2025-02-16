@@ -178,7 +178,10 @@ async def record_and_send_audio(client, sample_rate: int = 16000, channels: int 
 
             # 计算音频数据的能量（RMS）
             audio_data = np.frombuffer(data, dtype=np.int16)
-            rms = np.sqrt(np.mean(audio_data ** 2))
+            try:
+                rms = np.sqrt(np.mean(audio_data ** 2))
+            except Exception:
+                rms = 0
 
             if rms > sound_threshold:
                 if not recording:
@@ -366,7 +369,7 @@ class WebSocketClient:
                 data = json.loads(message)
                 if isinstance(data, dict):
                     msg_type = data.get('type', 'unknown')
-                    print(f"[INFO] 收到{msg_type}消息: {message}")
+                    print(f"[INFO] 收到{msg_type}消息: {json.dumps(data, ensure_ascii=False)}")
                     if msg_type == 'tts':
                         msg_state = data.get('state', 'unknown')
                         if msg_state=='stop':

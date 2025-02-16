@@ -12,8 +12,10 @@ from pydub import AudioSegment
 import argparse
 from typing import List, Dict, Union, Iterator
 import threading
+from datetime import datetime
 import time
 import wave
+import os
 
 import config
 
@@ -172,40 +174,60 @@ async def record_and_send_audio(client, sample_rate: int = 16000, channels: int 
 
         recording = False
         silent_frames_count = 0
+        frames = []
 
-        while True:
-            data = stream.read(frame_size)
+        # 确保 tmp 目录存在
+        tmp_dir = 'tmp'
+        if not os.path.exists(tmp_dir):
+            os.makedirs(tmp_dir)
+
+        # 创建 wav 文件路径
+        # 生成时间戳
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        wav_file_path = os.path.join(tmp_dir, f'recorded_audio_{timestamp}.wav')
+
+        # 打开 wav 文件以写入
+        with wave.open(wav_file_path, 'wb') as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(p.get_sample_size(pyaudio.paInt16))
+            wav_file.setframerate(sample_rate)
+            while True:
+                data = stream.read(frame_size)
+                frames.append(data)
 
             # 计算音频数据的能量（RMS）
-            audio_data = np.frombuffer(data, dtype=np.int16)
-            try:
-                rms = np.sqrt(np.mean(audio_data ** 2))
-            except Exception:
-                rms = 0
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                try:
+                    rms = np.sqrt(np.mean(audio_data ** 2))
+                except Exception:
+                    rms = 0
 
-            if rms > sound_threshold:
-                if not recording:
-                    print(f"[INFO] 检测到声音，开始录制")
-                    recording = True
-                    silent_frames_count = 0
+                if rms > sound_threshold:
+                    if not recording:
+                        print(f"[INFO] 检测到声音，开始录制")
+                        recording = True
+                        silent_frames_count = 0
 
                 # 编码为 Opus 格式
-                opus_frame = encoder.encode(data, frame_size)
+                    opus_frame = encoder.encode(data, frame_size)
 
                 # 发送 Opus 帧
-                await client.websocket.send(opus_frame)
-                print(f"[INFO] 发送音频帧")
-            else:
-                if recording:
-                    silent_frames_count += 1
-                    if silent_frames_count >= silence_frames:
-                        print(f"[INFO] 检测到静音，结束录制")
-                        recording = False
-                        silent_frames_count = 0
+                    await client.websocket.send(opus_frame)
+                    print(f"[INFO] 发送音频帧")
+                else:
+                    if recording:
+                        silent_frames_count += 1
+                        if silent_frames_count >= silence_frames:
+                            print(f"[INFO] 检测到静音，结束录制")
+                            recording = False
+                            silent_frames_count = 0
                         # await client.websocket.send(b'')
-                        break
+                            break
 
-        print("[INFO] 录制完成")
+            # 写入所有帧到 wav 文件
+            wav_file.writeframes(b''.join(frames))
+
+        print(f"[INFO] 录制完成，文件保存为: {wav_file_path}")
         await client.websocket.send(json.dumps({"session_id":client.audio_config.session_id,"type":"listen","state":"stop"}))
         await client.websocket.send(b'')
         time.sleep(0.1)

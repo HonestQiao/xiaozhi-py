@@ -203,10 +203,10 @@ async def record_and_send_audio(client, sample_rate: int = 16000, channels: int 
                     rms = 0
 
                 if rms > sound_threshold:
+                    silent_frames_count = 0
                     if not recording:
                         print(f"[INFO] 检测到声音，开始录制")
                         recording = True
-                        silent_frames_count = 0
 
                 # 编码为 Opus 格式
                     opus_frame = encoder.encode(data, frame_size)

@@ -8,3 +8,6 @@ FRAME_DURATION = 60     # 录音块时长，单位毫秒
 SOUND_THRESHOLD = 13    # 音量阈值，高于此值认为有声音
 SILENCE_THRESHOLD = 12  # 静音阈值，低于此值认为无音
 SILENCE_FRAMES = 15     # 静音帧数，超过此值认为静音
+
+# 唤醒词：TODO 待实现
+WAKE_WORD = "小美同学"

@@ -393,7 +393,7 @@ class WebSocketClient:
         print("[INFO] 发送初始配置")
 
         time.sleep(0.1)
-        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"detect","mode":"auto","text":"小美同学"}))
+        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"detect","mode":"auto","text":config.WAKE_WORD}))
 
     async def send_text(self, text: str):
         """将文本转换为语音并发送"""
@@ -408,6 +408,8 @@ class WebSocketClient:
             print(f"[INFO] 发送音频帧 {i+1}/{len(opus_frames)}")
             await asyncio.sleep(0.06)
 
+        await self.websocket.send(json.dumps({"session_id":self.audio_config.session_id,"type":"listen","state":"stop"}))
+        await self.websocket.send(b'')
     async def send_audio(self):
         """将录制音频为语音并发送"""
         print(f"[INFO] 录制音频")

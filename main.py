@@ -16,6 +16,9 @@ from datetime import datetime
 import time
 import wave
 import os
+import logging
+import struct
+import sys
 
 import config
 
@@ -64,6 +67,10 @@ def check_record_device():
         print(f"[ERROR] 检查音频设备时出错: {e}")
         return False
 
+if "api.tenclass.net" in config.WEBSOCKET_URI and config.DEVICE_ID == '11:22:33:44:55:66':
+    print("[ERROR] 未设置设备编号，请在config.py中设置")
+    sys.exit()
+
 # 全局变量记录音频设备状态
 has_audio_device = check_audio_device()
 if not has_audio_device:
@@ -100,24 +107,41 @@ def play_audio_stream(audio_stream: Iterator[bytes]) -> bytes:
         device_index = default_device_info['index']
 
         try:
+            # Opus帧大小固定为960采样点
+            frame_size = 960
+
             stream = p.open(
                 format=pyaudio.paInt16,
                 channels=config.CHANNELS,
                 rate=config.SAMPLE_RATE,
                 output=True,
                 output_device_index=device_index,  # 指定输出设备
-                frames_per_buffer=960  # 设置缓冲区大小
+                frames_per_buffer=frame_size  # 设置缓冲区大小
             )
-
-            # Opus帧大小固定为960采样点
-            frame_size = 960
 
             # 解码音频数据
             for audio_data in audio_stream:
-                pcm_data = decoder.decode(audio_data, frame_size)
+                # 解析普通二进制协议格式
+                if len(audio_data) < 4:
+                    logging.error(f"[ERROR] 数据包太小: {len(audio_data)}")
+                    continue
+
+                # 解析头部 [type(1) + reserved(1) + len(2) + payload]
+                if config.PROTOCOL_VERSION ==3:
+                    type_byte = audio_data[0]
+                    payload_size = struct.unpack('>H', audio_data[2:4])[0]
+                    payload = audio_data[4:4 + payload_size]
+                elif config.PROTOCOL_VERSION ==2:
+                    type_byte = audio_data[15]
+                    # payload_size = struct.unpack('>H', audio_data[14:16])[0]
+                    payload = audio_data[16:16+type_byte]
+                else:
+                    payload = audio_data
+
+                pcm_data = decoder.decode(payload, frame_size)
 
                 # 将解码后的PCM数据写入音频流
-                if stream.is_active():
+                if stream.is_active() and len(pcm_data)>0:
                     stream.write(pcm_data)
 
         except Exception as e:
@@ -208,10 +232,10 @@ async def record_and_send_audio(client, sample_rate: int = 16000, channels: int 
                         print(f"[INFO] 检测到声音，开始录制")
                         recording = True
 
-                # 编码为 Opus 格式
+                    # 编码为 Opus 格式
                     opus_frame = encoder.encode(data, frame_size)
 
-                # 发送 Opus 帧
+                    # 发送 Opus 帧
                     await client.websocket.send(opus_frame)
                     print(f"[INFO] 发送音频帧")
                 else:
@@ -221,15 +245,13 @@ async def record_and_send_audio(client, sample_rate: int = 16000, channels: int 
                             print(f"[INFO] 检测到静音，结束录制")
                             recording = False
                             silent_frames_count = 0
-                        # await client.websocket.send(b'')
+                            # await client.websocket.send(b'')
                             break
 
             # 写入所有帧到 wav 文件
             wav_file.writeframes(b''.join(frames))
 
         print(f"[INFO] 录制完成，文件保存为: {wav_file_path}")
-        await client.websocket.send(json.dumps({"session_id":client.audio_config.session_id,"type":"listen","state":"stop"}))
-        await client.websocket.send(b'')
         time.sleep(0.1)
 
         # 停止和关闭流
@@ -345,7 +367,13 @@ class WebSocketClient:
 
     async def connect(self):
         """建立WebSocket连接并完成初始化"""
-        self.websocket = await websockets.connect(self.uri)
+        self.websocket = await websockets.connect(self.uri,
+            additional_headers={
+                "Authorization":f"Bearer test-token",
+                "Protocol-Version":f"{config.PROTOCOL_VERSION}",
+                "Device-Id": config.DEVICE_ID
+            }
+        )
         await self._send_init_config()
         response = await self.websocket.recv()
         print(f"[INFO] 收到服务器回复: {response}")
@@ -405,7 +433,7 @@ class WebSocketClient:
         init_config = {
             "type": "hello",
             "transport": "websocket",
-            "version": 3,
+            "version": f"{config.PROTOCOL_VERSION}",
             "response_mode": "auto",
             "audio_params": {
                 "format": "opus",
@@ -418,11 +446,14 @@ class WebSocketClient:
         print("[INFO] 发送初始配置")
 
         time.sleep(0.1)
-        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"detect","mode":"auto","text":config.WAKE_WORD}))
+        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"detect","text":config.WAKE_WORD}))
+        time.sleep(0.1)
+        await self.websocket.send(json.dumps({"session_id":"","type":"listen","state":"start","mode":"auto"}))
 
     async def send_text(self, text: str):
         """将文本转换为语音并发送"""
         print(f"[INFO] 发送文本: {text}")
+        # await self.websocket.send(json.dumps({"session_id":self.audio_config.session_id,"type":"abort"}))
         opus_frames = await text_to_opus_audio(text, self.audio_config)
         if opus_frames is None:
             print("[ERROR] 生成的音频数据为空")
@@ -438,8 +469,10 @@ class WebSocketClient:
     async def send_audio(self):
         """将录制音频为语音并发送"""
         print(f"[INFO] 录制音频")
+        # await self.websocket.send(json.dumps({"session_id":self.audio_config.session_id,"type":"abort"}))
         await record_and_send_audio(self, sample_rate=config.SAMPLE_RATE, channels=config.CHANNELS, frame_duration = config.FRAME_DURATION, silence_threshold=config.SILENCE_THRESHOLD, silence_frames = config.SILENCE_FRAMES, sound_threshold=config.SOUND_THRESHOLD)
-
+        await self.websocket.send(json.dumps({"session_id":self.audio_config.session_id,"type":"listen","state":"stop"}))
+        await self.websocket.send(b'')
     async def close(self):
         """关闭WebSocket连接和接收任务"""
         self._running = False
@@ -536,9 +569,9 @@ def parse_args():
     parser.add_argument('--mode', choices=['interactive', 'automated'],
                       default='interactive', help='运行模式')
     parser.add_argument('--scenario', type=str, help='测试场景文件路径')
-    parser.add_argument('--play-audio', action='store_true',
+    parser.add_argument('--play-audio', action='store_true',default=True,
                       help='启用音频播放 (默认: 不播放)')
-    parser.add_argument('--use-mic', action='store_true',
+    parser.add_argument('--use-mic', action='store_true',default=True,
                       help='启用音频录制 (默认: 不录制)')
     return parser.parse_args()
 

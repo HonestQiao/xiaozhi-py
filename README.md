@@ -68,7 +68,7 @@ python main.py --mode automated --scenario scenarios/example.json --play-audio
 ├── main.py              # 交互式客户端
 ├── scenarios/          # 测试场景目录
 │   └── example.json   # 示例测试场景
-└── test_outputs/         # 生成的音频文件目录
+└── tmp/         # 生成的音频文件目录
 ```
 
 ## 配置说明
@@ -108,7 +108,7 @@ python main.py --mode automated --scenario scenarios/example.json --play-audio
    - 检查音频权限设置
 
 2. 存储空间
-   - 测试音频文件会保存在 `test_outputs` 目录
+   - 测试音频文件会保存在 `tmp` 目录
    - 定期清理不需要的音频文件
 
 ## 常见问题
@@ -123,7 +123,7 @@ python main.py --mode automated --scenario scenarios/example.json --play-audio
 ### 调试信息
 
 - 程序会输出详细的日志信息
-- 音频文件保存在 `test_outputs` 目录
+- 音频文件保存在 `tmp` 目录
 - 可以通过日志追踪测试流程
 
 ## 开发者

@@ -7,6 +7,8 @@
 - 支持批量测试用例
 - 自动保存生成的音频文件
 - 使用websocket连接小智同学服务器
+    - 小智官方服务端接口：wss://api.tenclass.net/xiaozhi/v1/
+    - 开源服务端(需自建)：[xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server)
 
 ## 安装步骤
 
